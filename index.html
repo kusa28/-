@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>hello</title>
+    <!-- PWA manifest (アドレスバー非表示 & ネイティブ風) -->
+    <link rel="manifest" href="data:application/manifest+json,{name:'IronRecorder Pro',short_name:'IR Pro',display:'standalone',theme_color:'#000000',background_color:'#000000',icons:[{src:'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 100 100\'%3E%3Ccircle cx=\'50\' cy=\'50\' r=\'45\' fill=\'%23ff4444\'/%3E%3C/svg%3E',sizes:'512x512',type:'image/svg+xml'}]}">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            background: #0c1114;
+            color: #b0b8c0;
+            font-family: 'Segoe UI', 'Roboto', system-ui, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 12px;
+        }
+
+        #app {
+            width: 100%;
+            max-width: 560px;
+            background: #181e24;
+            border-radius: 24px;
+            padding: 20px 16px;
+            box-shadow: 0 12px 28px rgba(0,0,0,0.5);
+            border: 1px solid #2a343c;
+        }
+
+        h1 {
+            font-size: 1.6rem;
+            font-weight: 400;
+            letter-spacing: 2px;
+            text-align: center;
+            color: #f5f5f5;
+            margin-bottom: 16px;
+            text-shadow: 0 0 6px #c76b6b40;
+        }
+
+        .meter-container {
+            background: #12181e;
+            border-radius: 16px;
+            padding: 14px 12px;
+            margin-bottom: 20px;
+            border: 1px solid #2f3a42;
+        }
+
+        .meter-bar {
+            height: 24px;
+            background: #1b242b;
+            border-radius: 12px;
+            overflow: hidden;
+            margin-bottom: 12px;
+            box-shadow: inset 0 2px 4px #00000060;
+        }
+
+        #meterFill {
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg, #5f9f7f, #7fc07f);
+            box-shadow: 0 0 8px #7fc07f80;
+            transition: width 0.05s linear;
+            border-radius: 12px;
+        }
+
+        .stats {
+            display: flex;
+            justify-content: space-between;
+            font-size: 1.2rem;
+            font-weight: 400;
+            background: #00000020;
+            padding: 6px 14px;
+            border-radius: 30px;
+            backdrop-filter: blur(2px);
+        }
+
+        .time-box, .size-box {
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+        }
+
+        .label {
+            font-size: 0.8rem;
+            color: #7e8c9c;
+        }
+
+        .value {
+            font-family: 'Courier New', monospace;
+            color: #cbd5e0;
+            text-shadow: 0 0 4px #8aa0b0;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin: 20px 0 12px;
+        }
+
+        .btn {
+            background: #2e3b44;
+            border: none;
+            border-radius: 40px;
+            padding: 14px 18px;
+            font-size: 1.3rem;
+            font-weight: 500;
+            color: #d3dce5;
+            box-shadow: 0 4px 0 #151c22, 0 2px 8px black;
+            cursor: pointer;
+            transition: all 0.05s ease;
+            border: 1px solid #4a5a66;
+            flex: 1;
+            text-align: center;
+            min-width: 90px;
+            touch-action: manipulation;
+        }
+
+        .btn:active {
+            transform: translateY(2px);
+            box-shadow: 0 2px 0 #151c22, 0 1px 6px black;
+        }
+
+        .btn.primary {
+            background: #808080;
+            border-color: #696969;
+            box-shadow: 0 4px 0 #3f3f3f;
+            color: #f0e0e0;
+        }
+
+        .btn.secondary {
+            background: #3a4650;
+            flex: 0.5;
+            font-size: 1.1rem;
+            padding: 14px 8px;
+        }
+
+        .btn:disabled {
+            opacity: 0.35;
+            transform: none;
+            box-shadow: 0 2px 0 #151c22;
+            pointer-events: none;
+            filter: grayscale(0.5);
+        }
+
+        /* 再ロックボタン (小さく控えめ) */
+        #relockBtn {
+            background: #33404a;
+            border-color: #54626e;
+            box-shadow: 0 3px 0 #1e262c;
+            font-size: 1rem;
+            padding: 10px 8px;
+            flex: 0.4;
+        }
+
+        .recovery-area {
+            margin-top: 20px;
+            padding: 14px 12px;
+            background: #111a21;
+            border-radius: 16px;
+            border-left: 4px solid #a08060;
+        }
+
+        .recovery-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 1rem;
+            margin-bottom: 10px;
+            color: #b89a7a;
+        }
+
+        #recoverBtn {
+            background: #4a4038;
+            padding: 12px 16px;
+            font-size: 1.1rem;
+            width: 100%;
+            box-shadow: 0 3px 0 #2f2822;
+            border-color: #7a6a5c;
+        }
+
+        .footnote {
+            margin-top: 12px;
+            color: #5f707c;
+            font-size: 0.7rem;
+            text-align: center;
+        }
+
+        /* アイアンスクリーン (漆黒・無表示) */
+        #ironOverlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #000000;
+            z-index: 9999;
+            display: block;
+            touch-action: none;
+            pointer-events: auto;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.2s;
+            user-select: none;
+        }
+
+        #ironOverlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .overlay-content {
+            display: none;
+        }
+
+        @media (max-width: 480px) {
+            #app { padding: 16px 10px; }
+            .btn { padding: 12px 10px; font-size: 1.1rem; }
+            .btn.secondary { font-size: 1rem; }
+            #relockBtn { font-size: 0.9rem; padding: 10px 4px; }
+        }
+    </style>
+</head>
+<body>
+<div id="app">
+    <h1>ー</h1>
+
+    <!-- レベルメーター & 統計 -->
+    <div class="meter-container">
+        <div class="meter-bar">
+            <div id="meterFill"></div>
+        </div>
+        <div class="stats">
+            <div class="time-box">
+                <span class="label">経過</span>
+                <span id="timerDisplay" class="value">00:00</span>
+            </div>
+            <div class="size-box">
+                <span class="label">保存済</span>
+                <span id="sizeDisplay" class="value">0 KB</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- 操作ボタン (再ロック追加) -->
+    <div class="controls">
+        <button id="recordBtn" class="btn primary">▶</button>
+        <button id="stopBtn" class="btn secondary" disabled>■ 停止</button>
+        <button id="relockBtn" class="btn" disabled title="鉄壁を再表示">🔒 再ロック</button>
+    </div>
+
+    <!-- リカバリ領域 -->
+    <div class="recovery-area">
+        <div class="recovery-title">
+            <span>🛡️ 保護データ</span>
+            <span id="recoveryBadge" style="margin-left:auto; background:#332a22; padding:4px 12px; border-radius:20px; font-size:0.8rem;">待機中</span>
+        </div>
+        <button id="recoverBtn" class="btn" disabled>📦 中断データを復元</button>
+        <div style="font-size:0.75rem; margin-top:8px; color:#7a8a94;">5秒ごとに自動保存・クラッシュ後も結合可能</div>
+    </div>
+    <div class="footnote">
+        WakeLock有効 | 長押し3秒でロック解除 (タッチ/マウス対応)
+    </div>
+</div>
+
+<!-- アイアンスクリーン (漆黒) -->
+<div id="ironOverlay"></div>
+
+<script>
+    (function(){
+        "use strict";
+
+        // -------------------- グローバル変数 --------------------
+        let mediaRecorder = null;
+        let audioStream = null;
+        let wakeLock = null;
+        let recordingStartTime = 0;
+        let updateInterval = null;
+        let db = null;
+        let isRecording = false;
+        let totalSavedBytes = 0;
+        let currentSessionId = null;
+
+        // DOM要素
+        const recordBtn = document.getElementById('recordBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const relockBtn = document.getElementById('relockBtn');
+        const timerDisplay = document.getElementById('timerDisplay');
+        const sizeDisplay = document.getElementById('sizeDisplay');
+        const meterFill = document.getElementById('meterFill');
+        const recoverBtn = document.getElementById('recoverBtn');
+        const recoveryBadge = document.getElementById('recoveryBadge');
+        const ironOverlay = document.getElementById('ironOverlay');
+
+        // オーディオコンテキスト
+        let audioContext = null;
+        let analyser = null;
+        let source = null;
+
+        // -------------------- IndexedDB --------------------
+        const DB_NAME = 'IronRecorderDB';
+        const STORE_NAME = 'audioChunks';
+        const DB_VERSION = 1;
+
+        function openDatabase() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(DB_NAME, DB_VERSION);
+                request.onerror = () => reject(request.error);
+                request.onsuccess = () => {
+                    db = request.result;
+                    resolve(db);
+                };
+                request.onupgradeneeded = (ev) => {
+                    const db = ev.target.result;
+                    if (!db.objectStoreNames.contains(STORE_NAME)) {
+                        const store = db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
+                        store.createIndex('sessionId', 'sessionId', { unique: false });
+                        store.createIndex('timestamp', 'timestamp', { unique: false });
+                    }
+                };
+            });
+        }
+
+        async function checkForPendingSession() {
+            if (!db) await openDatabase();
+            const tx = db.transaction(STORE_NAME, 'readonly');
+            const store = tx.objectStore(STORE_NAME);
+            const index = store.index('sessionId');
+            const sessions = new Set();
+            const request = index.openCursor();
+            return new Promise((resolve) => {
+                request.onsuccess = (ev) => {
+                    const cursor = ev.target.result;
+                    if (cursor) {
+                        sessions.add(cursor.value.sessionId);
+                        cursor.continue();
+                    } else {
+                        const sessionList = Array.from(sessions);
+                        if (sessionList.length > 0) {
+                            const lastSession = sessionList.sort().reverse()[0];
+                            recoveryBadge.textContent = `🔴 中断データ有 (${lastSession.slice(0,8)})`;
+                            recoverBtn.disabled = false;
+                        } else {
+                            recoveryBadge.textContent = `待機中`;
+                            recoverBtn.disabled = true;
+                        }
+                        resolve();
+                    }
+                };
+                request.onerror = () => resolve();
+            });
+        }
+
+        async function saveChunkToDB(blob, sessionId, timestamp) {
+            if (!db) await openDatabase();
+            const tx = db.transaction(STORE_NAME, 'readwrite');
+            const store = tx.objectStore(STORE_NAME);
+            const record = { sessionId, timestamp, blob, size: blob.size };
+            store.add(record);
+            totalSavedBytes += blob.size;
+            updateSizeDisplay();
+            return new Promise((resolve, reject) => {
+                tx.oncomplete = () => resolve();
+                tx.onerror = (e) => reject(e.target.error);
+            });
+        }
+
+        async function getChunksBySession(sessionId) {
+            if (!db) await openDatabase();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_NAME, 'readonly');
+                const store = tx.objectStore(STORE_NAME);
+                const index = store.index('sessionId');
+                const request = index.getAll(sessionId);
+                request.onsuccess = () => {
+                    const records = request.result;
+                    records.sort((a,b) => a.timestamp - b.timestamp);
+                    resolve(records);
+                };
+                request.onerror = () => reject(request.error);
+            });
+        }
+
+        async function deleteSessionData(sessionId) {
+            if (!db) await openDatabase();
+            const tx = db.transaction(STORE_NAME, 'readwrite');
+            const store = tx.objectStore(STORE_NAME);
+            const index = store.index('sessionId');
+            const request = index.openCursor(IDBKeyRange.only(sessionId));
+            return new Promise((resolve, reject) => {
+                request.onsuccess = (ev) => {
+                    const cursor = ev.target.result;
+                    if (cursor) {
+                        cursor.delete();
+                        cursor.continue();
+                    } else resolve();
+                };
+                request.onerror = () => reject(request.error);
+            });
+        }
+
+        // -------------------- Wake Lock --------------------
+        async function requestWakeLock() {
+            if (!('wakeLock' in navigator)) return;
+            try {
+                wakeLock = await navigator.wakeLock.request('screen');
+                wakeLock.addEventListener('release', () => console.log('Wake Lock 解放'));
+                document.addEventListener('visibilitychange', handleVisibilityChange);
+            } catch (err) {
+                console.warn(`Wake Lock 取得失敗: ${err.message}`);
+            }
+        }
+
+        async function releaseWakeLock() {
+            if (wakeLock) {
+                await wakeLock.release();
+                wakeLock = null;
+            }
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+        }
+
+        async function handleVisibilityChange() {
+            if (wakeLock !== null && document.visibilityState === 'visible' && isRecording) {
+                await requestWakeLock();
+            }
+        }
+
+        // -------------------- レベルメーター --------------------
+        async function setupAudioMeter(stream) {
+            if (audioContext) await audioContext.close();
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 256;
+            source = audioContext.createMediaStreamSource(stream);
+            source.connect(analyser);
+        }
+
+        function updateMeter() {
+            if (!analyser) return;
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            analyser.getByteFrequencyData(dataArray);
+            let sum = 0;
+            for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+            const avg = sum / dataArray.length;
+            const percent = Math.min(100, (avg / 255) * 150);
+            meterFill.style.width = percent + '%';
+            meterFill.style.background = percent > 80 ? 
+                'linear-gradient(90deg, #b09060, #c07050)' : 
+                'linear-gradient(90deg, #5f9f7f, #7fc07f)';
+        }
+
+        // -------------------- 表示更新 --------------------
+        function formatTime(ms) {
+            const totalSec = Math.floor(ms / 1000);
+            const minutes = Math.floor(totalSec / 60);
+            const seconds = totalSec % 60;
+            return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        }
+
+        function formatSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            else if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            else return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+        }
+
+        function updateTimerAndSize() {
+            if (isRecording && recordingStartTime) {
+                timerDisplay.textContent = formatTime(Date.now() - recordingStartTime);
+            } else {
+                timerDisplay.textContent = '00:00';
+            }
+            updateSizeDisplay();
+        }
+
+        function updateSizeDisplay() {
+            sizeDisplay.textContent = formatSize(totalSavedBytes);
+        }
+
+        // -------------------- アイアンスクリーン (長押し解除・マウス対応) --------------------
+        let longPressTimer = null;
+        const LONG_PRESS_DURATION = 3000;
+
+        function showIronOverlay() {
+            if (ironOverlay.classList.contains('active')) return;
+            ironOverlay.classList.add('active');
+            bindIronEvents();
+        }
+
+        function hideIronOverlay() {
+            if (!ironOverlay.classList.contains('active')) return;
+            ironOverlay.classList.remove('active');
+            unbindIronEvents();
+            clearLongPressTimer();
+        }
+
+        function bindIronEvents() {
+            ironOverlay.addEventListener('touchstart', onIronStart, { passive: false });
+            ironOverlay.addEventListener('touchend', onIronEnd);
+            ironOverlay.addEventListener('touchcancel', onIronCancel);
+            ironOverlay.addEventListener('touchmove', preventAll, { passive: false });
+            ironOverlay.addEventListener('mousedown', onIronStart);
+            ironOverlay.addEventListener('mouseup', onIronEnd);
+            ironOverlay.addEventListener('mouseleave', onIronCancel);
+            ironOverlay.addEventListener('mousemove', preventAll);
+            ironOverlay.addEventListener('click', preventAll, true);
+            ironOverlay.addEventListener('contextmenu', preventAll);
+        }
+
+        function unbindIronEvents() {
+            ironOverlay.removeEventListener('touchstart', onIronStart);
+            ironOverlay.removeEventListener('touchend', onIronEnd);
+            ironOverlay.removeEventListener('touchcancel', onIronCancel);
+            ironOverlay.removeEventListener('touchmove', preventAll);
+            ironOverlay.removeEventListener('mousedown', onIronStart);
+            ironOverlay.removeEventListener('mouseup', onIronEnd);
+            ironOverlay.removeEventListener('mouseleave', onIronCancel);
+            ironOverlay.removeEventListener('mousemove', preventAll);
+            ironOverlay.removeEventListener('click', preventAll, true);
+            ironOverlay.removeEventListener('contextmenu', preventAll);
+        }
+
+        function preventAll(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        function onIronStart(e) {
+            preventAll(e);
+            clearLongPressTimer();
+            longPressTimer = setTimeout(() => {
+                hideIronOverlay();
+                clearLongPressTimer();
+            }, LONG_PRESS_DURATION);
+        }
+
+        function onIronEnd(e) {
+            preventAll(e);
+            clearLongPressTimer();
+        }
+
+        function onIronCancel(e) {
+            preventAll(e);
+            clearLongPressTimer();
+        }
+
+        function clearLongPressTimer() {
+            if (longPressTimer) {
+                clearTimeout(longPressTimer);
+                longPressTimer = null;
+            }
+        }
+
+        // -------------------- 録音制御 --------------------
+        async function startRecording() {
+            if (isRecording) return;
+            try {
+                audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                let mimeType = 'audio/webm;codecs=opus';
+                if (!MediaRecorder.isTypeSupported(mimeType)) {
+                    mimeType = 'audio/webm';
+                    if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = '';
+                }
+                const options = mimeType ? { mimeType } : {};
+                mediaRecorder = new MediaRecorder(audioStream, options);
+
+                currentSessionId = `session_${Date.now()}`;
+                totalSavedBytes = 0;
+                updateSizeDisplay();
+
+                mediaRecorder.start(5000);
+
+                isRecording = true;
+                recordingStartTime = Date.now();
+                recordBtn.disabled = true;
+                stopBtn.disabled = false;
+                relockBtn.disabled = false;   // 録音中のみ再ロック有効
+
+                await requestWakeLock();
+                await setupAudioMeter(audioStream);
+
+                updateInterval = setInterval(() => {
+                    updateTimerAndSize();
+                    updateMeter();
+                }, 100);
+
+                showIronOverlay();
+
+                mediaRecorder.ondataavailable = async (event) => {
+                    if (event.data && event.data.size > 0) {
+                        await saveChunkToDB(event.data, currentSessionId, Date.now());
+                        recoveryBadge.textContent = `🔴 録音中 (セッション有)`;
+                        recoverBtn.disabled = false;
+                    }
+                };
+
+            } catch (err) {
+                alert('マイクアクセスエラー: ' + err.message);
+                resetUI();
+            }
+        }
+
+        async function stopRecording(shouldDownload = true) {
+            if (!isRecording || !mediaRecorder || mediaRecorder.state === 'inactive') return;
+
+            mediaRecorder.stop();
+            
+            if (audioStream) {
+                audioStream.getTracks().forEach(track => track.stop());
+                audioStream = null;
+            }
+            if (audioContext) {
+                await audioContext.close();
+                audioContext = null;
+                analyser = null;
+            }
+
+            await releaseWakeLock();
+
+            if (updateInterval) {
+                clearInterval(updateInterval);
+                updateInterval = null;
+            }
+
+            isRecording = false;
+            recordBtn.disabled = false;
+            stopBtn.disabled = true;
+            relockBtn.disabled = true;
+            
+            hideIronOverlay();
+
+            if (shouldDownload) {
+                try {
+                    const chunks = await getChunksBySession(currentSessionId);
+                    if (chunks.length === 0) return;
+                    const blobs = chunks.map(r => r.blob);
+                    const fullBlob = new Blob(blobs, { type: mediaRecorder.mimeType || 'audio/webm' });
+                    
+                    const url = URL.createObjectURL(fullBlob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `recording_${currentSessionId}.webm`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+
+                    await deleteSessionData(currentSessionId);
+                    totalSavedBytes = 0;
+                    updateSizeDisplay();
+                    recoveryBadge.textContent = `待機中`;
+                    recoverBtn.disabled = true;
+                } catch (e) {
+                    alert('データ結合エラー: ' + e.message);
+                }
+            }
+            await checkForPendingSession();
+        }
+
+        async function recoverLastSession() {
+            if (!db) await openDatabase();
+            const tx = db.transaction(STORE_NAME, 'readonly');
+            const store = tx.objectStore(STORE_NAME);
+            const index = store.index('sessionId');
+            const sessions = new Set();
+            const request = index.openCursor();
+            
+            return new Promise((resolve, reject) => {
+                request.onsuccess = async (ev) => {
+                    const cursor = ev.target.result;
+                    if (cursor) {
+                        sessions.add(cursor.value.sessionId);
+                        cursor.continue();
+                    } else {
+                        const sessionList = Array.from(sessions).sort().reverse();
+                        if (sessionList.length === 0) {
+                            alert('復元可能なデータはありません。');
+                            return resolve();
+                        }
+                        const lastSession = sessionList[0];
+                        try {
+                            const chunks = await getChunksBySession(lastSession);
+                            const blobs = chunks.map(r => r.blob);
+                            const fullBlob = new Blob(blobs, { type: 'audio/webm' });
+                            const url = URL.createObjectURL(fullBlob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = `recovered_${lastSession}.webm`;
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+                            URL.revokeObjectURL(url);
+                            
+                            if (confirm('復元したデータを端末から削除しますか？')) {
+                                await deleteSessionData(lastSession);
+                                totalSavedBytes = 0;
+                                updateSizeDisplay();
+                            }
+                            await checkForPendingSession();
+                        } catch (e) {
+                            alert('復元失敗: ' + e.message);
+                        }
+                        resolve();
+                    }
+                };
+                request.onerror = () => reject(request.error);
+            });
+        }
+
+        function resetUI() {
+            isRecording = false;
+            recordBtn.disabled = false;
+            stopBtn.disabled = true;
+            relockBtn.disabled = true;
+            timerDisplay.textContent = '00:00';
+            meterFill.style.width = '0%';
+            hideIronOverlay();
+            if (updateInterval) clearInterval(updateInterval);
+        }
+
+        // -------------------- イベント登録 --------------------
+        recordBtn.addEventListener('click', startRecording);
+        stopBtn.addEventListener('click', () => stopRecording(true));
+        
+        // 再ロックボタン：録音中のみ鉄壁を表示
+        relockBtn.addEventListener('click', () => {
+            if (isRecording) {
+                showIronOverlay();
+            }
+        });
+
+        recoverBtn.addEventListener('click', async () => {
+            if (isRecording) {
+                alert('録音中は復元できません。先に停止してください。');
+                return;
+            }
+            await recoverLastSession();
+        });
+
+        window.addEventListener('load', async () => {
+            try {
+                await openDatabase();
+                await checkForPendingSession();
+            } catch (e) {
+                console.warn('IndexedDB初期化エラー', e);
+            }
+        });
+
+        window.addEventListener('beforeunload', () => {
+            if (wakeLock) wakeLock.release();
+        });
+    })();
+</script>
+</body>
+</html>
