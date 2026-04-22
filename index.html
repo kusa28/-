@@ -3,11 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>hello</title>
-    <!-- PWA manifest (アドレスバー非表示 & ネイティブ風) -->
+    <title>アイアンレコーダー Pro</title>
+    <!-- PWA manifest -->
     <link rel="manifest" href="data:application/manifest+json,{name:'IronRecorder Pro',short_name:'IR Pro',display:'standalone',theme_color:'#000000',background_color:'#000000',icons:[{src:'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 100 100\'%3E%3Ccircle cx=\'50\' cy=\'50\' r=\'45\' fill=\'%23ff4444\'/%3E%3C/svg%3E',sizes:'512x512',type:'image/svg+xml'}]}">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <!-- MP3 エンコード用 lamejs (外部ライブラリ) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js"></script>
     <style>
         * {
             box-sizing: border-box;
@@ -43,7 +45,7 @@
             font-weight: 400;
             letter-spacing: 2px;
             text-align: center;
-            color: #f5f5f5;
+            color: #c76b6b;
             margin-bottom: 16px;
             text-shadow: 0 0 6px #c76b6b40;
         }
@@ -133,9 +135,9 @@
         }
 
         .btn.primary {
-            background: #808080;
-            border-color: #696969;
-            box-shadow: 0 4px 0 #3f3f3f;
+            background: #a04a4a;
+            border-color: #b87c7c;
+            box-shadow: 0 4px 0 #5e2e2e;
             color: #f0e0e0;
         }
 
@@ -154,7 +156,6 @@
             filter: grayscale(0.5);
         }
 
-        /* 再ロックボタン (小さく控えめ) */
         #relockBtn {
             background: #33404a;
             border-color: #54626e;
@@ -181,13 +182,29 @@
             color: #b89a7a;
         }
 
-        #recoverBtn {
+        .recovery-buttons {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        #recoverBtn, #downloadWebmBtn {
             background: #4a4038;
-            padding: 12px 16px;
-            font-size: 1.1rem;
-            width: 100%;
+            padding: 12px 12px;
+            font-size: 1rem;
             box-shadow: 0 3px 0 #2f2822;
             border-color: #7a6a5c;
+        }
+
+        #downloadWebmBtn {
+            background: #3a454e;
+            border-color: #607080;
+        }
+
+        .status-text {
+            font-size: 0.75rem;
+            color: #7a8a94;
+            margin-top: 8px;
         }
 
         .footnote {
@@ -197,7 +214,7 @@
             text-align: center;
         }
 
-        /* アイアンスクリーン (漆黒・無表示) */
+        /* アイアンスクリーン */
         #ironOverlay {
             position: fixed;
             top: 0;
@@ -220,10 +237,6 @@
             visibility: visible;
         }
 
-        .overlay-content {
-            display: none;
-        }
-
         @media (max-width: 480px) {
             #app { padding: 16px 10px; }
             .btn { padding: 12px 10px; font-size: 1.1rem; }
@@ -234,9 +247,8 @@
 </head>
 <body>
 <div id="app">
-    <h1>ー</h1>
+    <h1>◉ IRON REC</h1>
 
-    <!-- レベルメーター & 統計 -->
     <div class="meter-container">
         <div class="meter-bar">
             <div id="meterFill"></div>
@@ -253,28 +265,28 @@
         </div>
     </div>
 
-    <!-- 操作ボタン (再ロック追加) -->
     <div class="controls">
-        <button id="recordBtn" class="btn primary">▶</button>
+        <button id="recordBtn" class="btn primary">▶ 録音</button>
         <button id="stopBtn" class="btn secondary" disabled>■ 停止</button>
         <button id="relockBtn" class="btn" disabled title="鉄壁を再表示">🔒 再ロック</button>
     </div>
 
-    <!-- リカバリ領域 -->
     <div class="recovery-area">
         <div class="recovery-title">
             <span>🛡️ 保護データ</span>
             <span id="recoveryBadge" style="margin-left:auto; background:#332a22; padding:4px 12px; border-radius:20px; font-size:0.8rem;">待機中</span>
         </div>
-        <button id="recoverBtn" class="btn" disabled>📦 中断データを復元</button>
-        <div style="font-size:0.75rem; margin-top:8px; color:#7a8a94;">5秒ごとに自動保存・クラッシュ後も結合可能</div>
+        <div class="recovery-buttons">
+            <button id="recoverBtn" class="btn" disabled>📦 中断MP3復元</button>
+            <button id="downloadWebmBtn" class="btn" disabled>⬇ WebM保存</button>
+        </div>
+        <div id="convertStatus" class="status-text">5秒ごとに自動保存・停止時にMP3変換</div>
     </div>
     <div class="footnote">
-        WakeLock有効 | 長押し3秒でロック解除 (タッチ/マウス対応)
+        WakeLock有効 | 長押し3秒でロック解除 (タッチ/マウス)
     </div>
 </div>
 
-<!-- アイアンスクリーン (漆黒) -->
 <div id="ironOverlay"></div>
 
 <script>
@@ -291,8 +303,9 @@
         let isRecording = false;
         let totalSavedBytes = 0;
         let currentSessionId = null;
+        let finalWebMBlob = null;  // 停止時に結合したWebMを保持（MP3変換/WebM保存用）
 
-        // DOM要素
+        // DOM
         const recordBtn = document.getElementById('recordBtn');
         const stopBtn = document.getElementById('stopBtn');
         const relockBtn = document.getElementById('relockBtn');
@@ -300,10 +313,11 @@
         const sizeDisplay = document.getElementById('sizeDisplay');
         const meterFill = document.getElementById('meterFill');
         const recoverBtn = document.getElementById('recoverBtn');
+        const downloadWebmBtn = document.getElementById('downloadWebmBtn');
         const recoveryBadge = document.getElementById('recoveryBadge');
+        const convertStatus = document.getElementById('convertStatus');
         const ironOverlay = document.getElementById('ironOverlay');
 
-        // オーディオコンテキスト
         let audioContext = null;
         let analyser = null;
         let source = null;
@@ -351,9 +365,11 @@
                             const lastSession = sessionList.sort().reverse()[0];
                             recoveryBadge.textContent = `🔴 中断データ有 (${lastSession.slice(0,8)})`;
                             recoverBtn.disabled = false;
+                            downloadWebmBtn.disabled = false;
                         } else {
                             recoveryBadge.textContent = `待機中`;
                             recoverBtn.disabled = true;
+                            downloadWebmBtn.disabled = true;
                         }
                         resolve();
                     }
@@ -417,9 +433,7 @@
                 wakeLock = await navigator.wakeLock.request('screen');
                 wakeLock.addEventListener('release', () => console.log('Wake Lock 解放'));
                 document.addEventListener('visibilitychange', handleVisibilityChange);
-            } catch (err) {
-                console.warn(`Wake Lock 取得失敗: ${err.message}`);
-            }
+            } catch (err) {}
         }
 
         async function releaseWakeLock() {
@@ -460,7 +474,7 @@
                 'linear-gradient(90deg, #5f9f7f, #7fc07f)';
         }
 
-        // -------------------- 表示更新 --------------------
+        // -------------------- 表示 --------------------
         function formatTime(ms) {
             const totalSec = Math.floor(ms / 1000);
             const minutes = Math.floor(totalSec / 60);
@@ -487,7 +501,7 @@
             sizeDisplay.textContent = formatSize(totalSavedBytes);
         }
 
-        // -------------------- アイアンスクリーン (長押し解除・マウス対応) --------------------
+        // -------------------- アイアンスクリーン --------------------
         let longPressTimer = null;
         const LONG_PRESS_DURATION = 3000;
 
@@ -530,35 +544,68 @@
             ironOverlay.removeEventListener('contextmenu', preventAll);
         }
 
-        function preventAll(e) {
-            e.preventDefault();
-            e.stopPropagation();
-        }
+        function preventAll(e) { e.preventDefault(); e.stopPropagation(); }
+        function onIronStart(e) { preventAll(e); clearLongPressTimer(); longPressTimer = setTimeout(() => { hideIronOverlay(); clearLongPressTimer(); }, LONG_PRESS_DURATION); }
+        function onIronEnd(e) { preventAll(e); clearLongPressTimer(); }
+        function onIronCancel(e) { preventAll(e); clearLongPressTimer(); }
+        function clearLongPressTimer() { if(longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; } }
 
-        function onIronStart(e) {
-            preventAll(e);
-            clearLongPressTimer();
-            longPressTimer = setTimeout(() => {
-                hideIronOverlay();
-                clearLongPressTimer();
-            }, LONG_PRESS_DURATION);
-        }
-
-        function onIronEnd(e) {
-            preventAll(e);
-            clearLongPressTimer();
-        }
-
-        function onIronCancel(e) {
-            preventAll(e);
-            clearLongPressTimer();
-        }
-
-        function clearLongPressTimer() {
-            if (longPressTimer) {
-                clearTimeout(longPressTimer);
-                longPressTimer = null;
+        // -------------------- WebM → MP3 変換 (lamejs) --------------------
+        async function convertWebMToMp3(webmBlob) {
+            convertStatus.textContent = 'MP3変換中... 少々お待ちください';
+            // WebM → AudioBuffer
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const arrayBuffer = await webmBlob.arrayBuffer();
+            const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+            
+            // モノラルに変換 (lamejsはモノラル/ステレオ対応)
+            const channels = audioBuffer.numberOfChannels;
+            const sampleRate = audioBuffer.sampleRate;
+            const samples = audioBuffer.getChannelData(0); // 左チャンネルを使用
+            
+            // ステレオの場合は左右平均を取る (簡易)
+            let pcmData;
+            if (channels === 2) {
+                const right = audioBuffer.getChannelData(1);
+                pcmData = new Float32Array(samples.length);
+                for (let i = 0; i < samples.length; i++) {
+                    pcmData[i] = (samples[i] + right[i]) / 2;
+                }
+            } else {
+                pcmData = samples;
             }
+
+            // lamejs エンコード
+            const mp3encoder = new lamejs.Mp3Encoder(1, sampleRate, 128); // モノラル, 128kbps
+            const mp3Data = [];
+            const blockSize = 1152;
+            for (let i = 0; i < pcmData.length; i += blockSize) {
+                const chunk = pcmData.subarray(i, i + blockSize);
+                const int16 = new Int16Array(chunk.length);
+                for (let j = 0; j < chunk.length; j++) {
+                    let s = Math.max(-1, Math.min(1, chunk[j]));
+                    int16[j] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                }
+                const mp3buf = mp3encoder.encodeBuffer(int16);
+                if (mp3buf.length > 0) mp3Data.push(mp3buf);
+            }
+            const end = mp3encoder.flush();
+            if (end.length > 0) mp3Data.push(end);
+            
+            const mp3Blob = new Blob(mp3Data, { type: 'audio/mp3' });
+            convertStatus.textContent = 'MP3変換完了';
+            return mp3Blob;
+        }
+
+        function downloadBlob(blob, filename) {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
         }
 
         // -------------------- 録音制御 --------------------
@@ -566,54 +613,46 @@
             if (isRecording) return;
             try {
                 audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                
                 let mimeType = 'audio/webm;codecs=opus';
                 if (!MediaRecorder.isTypeSupported(mimeType)) {
                     mimeType = 'audio/webm';
                     if (!MediaRecorder.isTypeSupported(mimeType)) mimeType = '';
                 }
-                const options = mimeType ? { mimeType } : {};
-                mediaRecorder = new MediaRecorder(audioStream, options);
+                mediaRecorder = new MediaRecorder(audioStream, { mimeType });
 
                 currentSessionId = `session_${Date.now()}`;
                 totalSavedBytes = 0;
+                finalWebMBlob = null;
                 updateSizeDisplay();
-
                 mediaRecorder.start(5000);
 
                 isRecording = true;
                 recordingStartTime = Date.now();
                 recordBtn.disabled = true;
                 stopBtn.disabled = false;
-                relockBtn.disabled = false;   // 録音中のみ再ロック有効
+                relockBtn.disabled = false;
+                recoverBtn.disabled = true;
+                downloadWebmBtn.disabled = true;
 
                 await requestWakeLock();
                 await setupAudioMeter(audioStream);
-
-                updateInterval = setInterval(() => {
-                    updateTimerAndSize();
-                    updateMeter();
-                }, 100);
-
+                updateInterval = setInterval(() => { updateTimerAndSize(); updateMeter(); }, 100);
                 showIronOverlay();
 
                 mediaRecorder.ondataavailable = async (event) => {
                     if (event.data && event.data.size > 0) {
                         await saveChunkToDB(event.data, currentSessionId, Date.now());
-                        recoveryBadge.textContent = `🔴 録音中 (セッション有)`;
-                        recoverBtn.disabled = false;
+                        recoveryBadge.textContent = `🔴 録音中`;
                     }
                 };
-
             } catch (err) {
                 alert('マイクアクセスエラー: ' + err.message);
                 resetUI();
             }
         }
 
-        async function stopRecording(shouldDownload = true) {
+        async function stopRecording() {
             if (!isRecording || !mediaRecorder || mediaRecorder.state === 'inactive') return;
-
             mediaRecorder.stop();
             
             if (audioStream) {
@@ -625,49 +664,43 @@
                 audioContext = null;
                 analyser = null;
             }
-
             await releaseWakeLock();
-
-            if (updateInterval) {
-                clearInterval(updateInterval);
-                updateInterval = null;
-            }
-
+            if (updateInterval) clearInterval(updateInterval);
             isRecording = false;
             recordBtn.disabled = false;
             stopBtn.disabled = true;
             relockBtn.disabled = true;
-            
             hideIronOverlay();
 
-            if (shouldDownload) {
-                try {
-                    const chunks = await getChunksBySession(currentSessionId);
-                    if (chunks.length === 0) return;
-                    const blobs = chunks.map(r => r.blob);
-                    const fullBlob = new Blob(blobs, { type: mediaRecorder.mimeType || 'audio/webm' });
-                    
-                    const url = URL.createObjectURL(fullBlob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `recording_${currentSessionId}.webm`;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-
-                    await deleteSessionData(currentSessionId);
-                    totalSavedBytes = 0;
-                    updateSizeDisplay();
-                    recoveryBadge.textContent = `待機中`;
-                    recoverBtn.disabled = true;
-                } catch (e) {
-                    alert('データ結合エラー: ' + e.message);
-                }
+            // 全チャンクをDBから取得してWebMに結合
+            try {
+                const chunks = await getChunksBySession(currentSessionId);
+                if (chunks.length === 0) return;
+                const blobs = chunks.map(r => r.blob);
+                finalWebMBlob = new Blob(blobs, { type: mediaRecorder.mimeType || 'audio/webm' });
+                
+                // MP3に変換してダウンロード
+                const mp3Blob = await convertWebMToMp3(finalWebMBlob);
+                downloadBlob(mp3Blob, `recording_${currentSessionId}.mp3`);
+                
+                // 変換後、DBから削除
+                await deleteSessionData(currentSessionId);
+                totalSavedBytes = 0;
+                updateSizeDisplay();
+                recoveryBadge.textContent = `待機中`;
+                recoverBtn.disabled = true;
+                downloadWebmBtn.disabled = true;
+                convertStatus.textContent = 'MP3で保存しました';
+            } catch (e) {
+                alert('MP3変換エラー: ' + e.message);
+                convertStatus.textContent = '変換失敗。WebM保存ボタンをお試しください';
+                // WebM保存ボタンを有効化
+                downloadWebmBtn.disabled = false;
             }
             await checkForPendingSession();
         }
 
+        // 中断データをMP3復元
         async function recoverLastSession() {
             if (!db) await openDatabase();
             const tx = db.transaction(STORE_NAME, 'readonly');
@@ -675,8 +708,7 @@
             const index = store.index('sessionId');
             const sessions = new Set();
             const request = index.openCursor();
-            
-            return new Promise((resolve, reject) => {
+            return new Promise((resolve) => {
                 request.onsuccess = async (ev) => {
                     const cursor = ev.target.result;
                     if (cursor) {
@@ -684,38 +716,31 @@
                         cursor.continue();
                     } else {
                         const sessionList = Array.from(sessions).sort().reverse();
-                        if (sessionList.length === 0) {
-                            alert('復元可能なデータはありません。');
-                            return resolve();
-                        }
+                        if (sessionList.length === 0) { alert('復元可能なデータはありません。'); return resolve(); }
                         const lastSession = sessionList[0];
                         try {
                             const chunks = await getChunksBySession(lastSession);
                             const blobs = chunks.map(r => r.blob);
-                            const fullBlob = new Blob(blobs, { type: 'audio/webm' });
-                            const url = URL.createObjectURL(fullBlob);
-                            const a = document.createElement('a');
-                            a.href = url;
-                            a.download = `recovered_${lastSession}.webm`;
-                            document.body.appendChild(a);
-                            a.click();
-                            document.body.removeChild(a);
-                            URL.revokeObjectURL(url);
-                            
-                            if (confirm('復元したデータを端末から削除しますか？')) {
+                            const webmBlob = new Blob(blobs, { type: 'audio/webm' });
+                            const mp3Blob = await convertWebMToMp3(webmBlob);
+                            downloadBlob(mp3Blob, `recovered_${lastSession}.mp3`);
+                            if (confirm('復元データを端末から削除しますか？')) {
                                 await deleteSessionData(lastSession);
-                                totalSavedBytes = 0;
-                                updateSizeDisplay();
                             }
                             await checkForPendingSession();
-                        } catch (e) {
-                            alert('復元失敗: ' + e.message);
-                        }
+                        } catch (e) { alert('復元失敗: ' + e.message); }
                         resolve();
                     }
                 };
-                request.onerror = () => reject(request.error);
             });
+        }
+
+        async function downloadCurrentAsWebM() {
+            if (finalWebMBlob) {
+                downloadBlob(finalWebMBlob, `recording_${currentSessionId || 'session'}.webm`);
+            } else {
+                alert('WebMデータがありません');
+            }
         }
 
         function resetUI() {
@@ -731,35 +756,18 @@
 
         // -------------------- イベント登録 --------------------
         recordBtn.addEventListener('click', startRecording);
-        stopBtn.addEventListener('click', () => stopRecording(true));
-        
-        // 再ロックボタン：録音中のみ鉄壁を表示
-        relockBtn.addEventListener('click', () => {
-            if (isRecording) {
-                showIronOverlay();
-            }
-        });
-
+        stopBtn.addEventListener('click', stopRecording);
+        relockBtn.addEventListener('click', () => { if (isRecording) showIronOverlay(); });
         recoverBtn.addEventListener('click', async () => {
-            if (isRecording) {
-                alert('録音中は復元できません。先に停止してください。');
-                return;
-            }
+            if (isRecording) { alert('録音中は復元できません'); return; }
             await recoverLastSession();
         });
+        downloadWebmBtn.addEventListener('click', downloadCurrentAsWebM);
 
         window.addEventListener('load', async () => {
-            try {
-                await openDatabase();
-                await checkForPendingSession();
-            } catch (e) {
-                console.warn('IndexedDB初期化エラー', e);
-            }
+            try { await openDatabase(); await checkForPendingSession(); } catch (e) {}
         });
-
-        window.addEventListener('beforeunload', () => {
-            if (wakeLock) wakeLock.release();
-        });
+        window.addEventListener('beforeunload', () => { if (wakeLock) wakeLock.release(); });
     })();
 </script>
 </body>
