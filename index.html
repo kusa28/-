@@ -10,6 +10,8 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <!-- MP3 エンコード用 lamejs (外部ライブラリ) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js"></script>
+    <!-- Google Identity Services (Google Drive サインイン用) -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
     <style>
         * {
             box-sizing: border-box;
@@ -207,6 +209,66 @@
             margin-top: 8px;
         }
 
+        /* Google Drive エリア */
+        .drive-area {
+            margin-top: 16px;
+            padding: 14px 12px;
+            background: #101a24;
+            border-radius: 16px;
+            border-left: 4px solid #4a7fb0;
+        }
+
+        .drive-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 1rem;
+            margin-bottom: 10px;
+            color: #8ab0d0;
+        }
+
+        #driveStatus {
+            margin-left: auto;
+            background: #1a2a38;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+        }
+
+        #driveStatus.connected { background: #22402a; color: #8fd0a0; }
+
+        .drive-buttons {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        #driveSignInBtn, #driveUploadBtn {
+            background: #2c4257;
+            padding: 12px 12px;
+            font-size: 1rem;
+            box-shadow: 0 3px 0 #1a2833;
+            border-color: #4a7098;
+        }
+
+        #driveUploadBtn {
+            background: #2f4a56;
+            border-color: #5090a8;
+        }
+
+        .drive-auto {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 10px;
+            font-size: 0.8rem;
+            color: #8a9aa8;
+            user-select: none;
+            cursor: pointer;
+        }
+
+        .drive-auto input { width: 16px; height: 16px; cursor: pointer; }
+
         .footnote {
             margin-top: 12px;
             color: #5f707c;
@@ -282,6 +344,23 @@
         </div>
         <div id="convertStatus" class="status-text">5秒ごとに自動保存・停止時にMP3変換</div>
     </div>
+
+    <div class="drive-area">
+        <div class="drive-title">
+            <span>☁️ Google Drive</span>
+            <span id="driveStatus">未接続</span>
+        </div>
+        <div class="drive-buttons">
+            <button id="driveSignInBtn" class="btn">🔑 サインイン</button>
+            <button id="driveUploadBtn" class="btn" disabled>☁️ Driveへ保存</button>
+        </div>
+        <label class="drive-auto">
+            <input type="checkbox" id="driveAutoUpload">
+            録音停止時にMP3を自動でDriveへ保存
+        </label>
+        <div id="driveMsg" class="status-text">録音したMP3をGoogle Driveに保存できます</div>
+    </div>
+
     <div class="footnote">
         WakeLock有効 | 長押し3秒でロック解除 (タッチ/マウス)
     </div>
@@ -292,6 +371,32 @@
 <script>
     (function(){
         "use strict";
+
+        // ==================================================================
+        // Google Drive 設定
+        // ------------------------------------------------------------------
+        // 【事前準備】Google Cloud Console (https://console.cloud.google.com/)
+        //   1. プロジェクトを作成
+        //   2. 「APIとサービス」→「ライブラリ」から Google Drive API を有効化
+        //   3. 「OAuth 同意画面」を設定（テストユーザーに自分のアカウントを追加）
+        //   4. 「認証情報」→「OAuth 2.0 クライアント ID」を作成
+        //        - アプリケーションの種類: 「ウェブアプリケーション」
+        //        - 承認済みの JavaScript 生成元: このページを公開するオリジンを追加
+        //          例) https://<ユーザー名>.github.io  （ローカルなら http://localhost:8080 など）
+        //   5. 発行された「クライアント ID」を下の GOOGLE_CLIENT_ID に貼り付け
+        //        （空のままでも、初回サインイン時に入力を求められブラウザに保存されます）
+        //
+        // ※ Drive へのアクセス範囲は drive.file スコープ（このアプリが作成した
+        //    ファイルのみ）に限定しているため、既存の Drive 内ファイルは読めません。
+        // ==================================================================
+        let GOOGLE_CLIENT_ID = '';  // 例: '1234567890-abcdef.apps.googleusercontent.com'
+        const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+
+        let tokenClient = null;     // GIS トークンクライアント
+        let accessToken = null;     // 取得済みアクセストークン
+        let pendingUpload = null;   // サインイン完了後に自動実行するアップロード {blob, name}
+        let lastMp3Blob = null;     // 直近に生成した MP3（Drive アップロード対象）
+        let lastMp3Name = null;
 
         // -------------------- グローバル変数 --------------------
         let mediaRecorder = null;
@@ -317,6 +422,11 @@
         const recoveryBadge = document.getElementById('recoveryBadge');
         const convertStatus = document.getElementById('convertStatus');
         const ironOverlay = document.getElementById('ironOverlay');
+        const driveStatus = document.getElementById('driveStatus');
+        const driveSignInBtn = document.getElementById('driveSignInBtn');
+        const driveUploadBtn = document.getElementById('driveUploadBtn');
+        const driveAutoUpload = document.getElementById('driveAutoUpload');
+        const driveMsg = document.getElementById('driveMsg');
 
         let audioContext = null;
         let analyser = null;
@@ -608,6 +718,155 @@
             URL.revokeObjectURL(url);
         }
 
+        // -------------------- Google Drive --------------------
+        // 使用するクライアント ID を取得（定数 → localStorage の順）
+        function getClientId() {
+            if (GOOGLE_CLIENT_ID && GOOGLE_CLIENT_ID.indexOf('.apps.googleusercontent.com') !== -1) {
+                return GOOGLE_CLIENT_ID;
+            }
+            return localStorage.getItem('googleClientId') || '';
+        }
+
+        // GIS ライブラリの読み込みを待ってトークンクライアントを初期化
+        function initTokenClient() {
+            const clientId = getClientId();
+            if (!clientId) return false;
+            if (!(window.google && google.accounts && google.accounts.oauth2)) return false;
+            tokenClient = google.accounts.oauth2.initTokenClient({
+                client_id: clientId,
+                scope: GOOGLE_DRIVE_SCOPE,
+                callback: (resp) => {
+                    if (resp && resp.error) {
+                        setDriveMsg('サインイン失敗: ' + (resp.error_description || resp.error));
+                        pendingUpload = null;
+                        return;
+                    }
+                    accessToken = resp.access_token;
+                    setDriveConnected(true);
+                    setDriveMsg('Google Drive に接続しました');
+                    // サインインを起点に予約されたアップロードがあれば実行
+                    if (pendingUpload) {
+                        const p = pendingUpload;
+                        pendingUpload = null;
+                        uploadToDrive(p.blob, p.name);
+                    }
+                },
+            });
+            return true;
+        }
+
+        function setDriveConnected(connected) {
+            if (connected) {
+                driveStatus.textContent = '接続済み';
+                driveStatus.classList.add('connected');
+                driveSignInBtn.textContent = '🔓 サインアウト';
+                driveUploadBtn.disabled = !lastMp3Blob;
+            } else {
+                driveStatus.textContent = '未接続';
+                driveStatus.classList.remove('connected');
+                driveSignInBtn.textContent = '🔑 サインイン';
+                driveUploadBtn.disabled = true;
+            }
+        }
+
+        function setDriveMsg(text) { driveMsg.textContent = text; }
+
+        // サインイン（アクセストークンの取得）を要求
+        function driveSignIn() {
+            let clientId = getClientId();
+            if (!clientId) {
+                const entered = prompt(
+                    'Google OAuth クライアント ID を入力してください\n' +
+                    '(Google Cloud Console で作成した「ウェブアプリケーション」用の ID)\n' +
+                    '例: 1234567890-abcdef.apps.googleusercontent.com'
+                );
+                if (!entered) return;
+                if (entered.indexOf('.apps.googleusercontent.com') === -1) {
+                    alert('クライアント ID の形式が正しくないようです。\n末尾が .apps.googleusercontent.com のものを入力してください。');
+                    return;
+                }
+                localStorage.setItem('googleClientId', entered.trim());
+                clientId = entered.trim();
+            }
+            if (!tokenClient) {
+                if (!initTokenClient()) {
+                    setDriveMsg('Google ライブラリを読み込み中です。数秒後に再度お試しください。');
+                    return;
+                }
+            }
+            setDriveMsg('Google アカウントを選択してください...');
+            // 既に同意済みなら空、初回は同意画面を表示
+            tokenClient.requestAccessToken({ prompt: accessToken ? '' : 'consent' });
+        }
+
+        // サインアウト（トークンの破棄）
+        function driveSignOut() {
+            if (accessToken && window.google && google.accounts && google.accounts.oauth2) {
+                google.accounts.oauth2.revoke(accessToken, () => {});
+            }
+            accessToken = null;
+            setDriveConnected(false);
+            setDriveMsg('サインアウトしました');
+        }
+
+        // MP3(等)の Blob を Google Drive へマルチパートアップロード
+        async function uploadToDrive(blob, filename) {
+            if (!blob) { setDriveMsg('アップロードするファイルがありません'); return; }
+            if (!accessToken) {
+                // 未サインインなら、サインイン後に自動アップロード
+                pendingUpload = { blob, name: filename };
+                setDriveMsg('サインインしてからアップロードします...');
+                driveSignIn();
+                return;
+            }
+            try {
+                driveUploadBtn.disabled = true;
+                setDriveMsg(`「${filename}」を Drive にアップロード中...`);
+                const metadata = { name: filename, mimeType: blob.type || 'audio/mp3' };
+                const form = new FormData();
+                form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+                form.append('file', blob);
+                const res = await fetch(
+                    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink',
+                    {
+                        method: 'POST',
+                        headers: { Authorization: 'Bearer ' + accessToken },
+                        body: form,
+                    }
+                );
+                if (res.status === 401) {
+                    // トークン失効 → 再取得してリトライ予約
+                    accessToken = null;
+                    setDriveConnected(false);
+                    pendingUpload = { blob, name: filename };
+                    setDriveMsg('セッションが切れました。再サインインします...');
+                    driveSignIn();
+                    return;
+                }
+                if (!res.ok) {
+                    const errText = await res.text();
+                    throw new Error(`HTTP ${res.status} ${errText}`);
+                }
+                const data = await res.json();
+                setDriveMsg(`✅ Drive に保存しました: ${data.name}`);
+                if (data.webViewLink) {
+                    driveMsg.innerHTML = `✅ Drive に保存しました: ` +
+                        `<a href="${data.webViewLink}" target="_blank" rel="noopener" style="color:#8ab0d0;">${data.name}</a>`;
+                }
+            } catch (e) {
+                setDriveMsg('アップロード失敗: ' + e.message);
+            } finally {
+                driveUploadBtn.disabled = !(accessToken && lastMp3Blob);
+            }
+        }
+
+        // 直近の MP3 を Drive アップロード対象として保持
+        function setLastMp3(blob, name) {
+            lastMp3Blob = blob;
+            lastMp3Name = name;
+            driveUploadBtn.disabled = !accessToken;  // サインイン済みなら押せる
+        }
+
         // -------------------- 録音制御 --------------------
         async function startRecording() {
             if (isRecording) return;
@@ -681,8 +940,16 @@
                 
                 // MP3に変換してダウンロード
                 const mp3Blob = await convertWebMToMp3(finalWebMBlob);
-                downloadBlob(mp3Blob, `recording_${currentSessionId}.mp3`);
-                
+                const mp3Name = `recording_${currentSessionId}.mp3`;
+                downloadBlob(mp3Blob, mp3Name);
+
+                // Drive アップロード用に保持
+                setLastMp3(mp3Blob, mp3Name);
+                // 自動アップロードが有効なら Drive へ
+                if (driveAutoUpload.checked) {
+                    uploadToDrive(mp3Blob, mp3Name);
+                }
+
                 // 変換後、DBから削除
                 await deleteSessionData(currentSessionId);
                 totalSavedBytes = 0;
@@ -723,7 +990,10 @@
                             const blobs = chunks.map(r => r.blob);
                             const webmBlob = new Blob(blobs, { type: 'audio/webm' });
                             const mp3Blob = await convertWebMToMp3(webmBlob);
-                            downloadBlob(mp3Blob, `recovered_${lastSession}.mp3`);
+                            const mp3Name = `recovered_${lastSession}.mp3`;
+                            downloadBlob(mp3Blob, mp3Name);
+                            setLastMp3(mp3Blob, mp3Name);
+                            if (driveAutoUpload.checked) uploadToDrive(mp3Blob, mp3Name);
                             if (confirm('復元データを端末から削除しますか？')) {
                                 await deleteSessionData(lastSession);
                             }
@@ -764,8 +1034,35 @@
         });
         downloadWebmBtn.addEventListener('click', downloadCurrentAsWebM);
 
+        // Google Drive
+        driveSignInBtn.addEventListener('click', () => {
+            if (accessToken) driveSignOut();
+            else driveSignIn();
+        });
+        driveUploadBtn.addEventListener('click', () => {
+            if (!lastMp3Blob) { setDriveMsg('先に録音してMP3を作成してください'); return; }
+            uploadToDrive(lastMp3Blob, lastMp3Name || 'recording.mp3');
+        });
+        driveAutoUpload.addEventListener('change', () => {
+            localStorage.setItem('driveAutoUpload', driveAutoUpload.checked ? '1' : '0');
+        });
+
+        // GIS ライブラリの読み込みを待ってトークンクライアントを準備
+        function waitForGisAndInit(retries) {
+            if (initTokenClient()) return;               // クライアントID設定済みなら初期化
+            if (window.google && google.accounts) return; // ライブラリは来たがIDは未設定（サインイン時に入力）
+            if (retries > 0) setTimeout(() => waitForGisAndInit(retries - 1), 300);
+        }
+
         window.addEventListener('load', async () => {
             try { await openDatabase(); await checkForPendingSession(); } catch (e) {}
+            // 自動アップロード設定を復元
+            if (localStorage.getItem('driveAutoUpload') === '1') driveAutoUpload.checked = true;
+            // クライアントIDが未設定なら案内を表示
+            if (!getClientId()) {
+                setDriveMsg('サインインを押して OAuth クライアント ID を設定してください（初回のみ）');
+            }
+            waitForGisAndInit(20);
         });
         window.addEventListener('beforeunload', () => { if (wakeLock) wakeLock.release(); });
     })();
