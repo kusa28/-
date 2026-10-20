@@ -78,6 +78,7 @@
           </div>
         </div>
         <span id="statusText" class="text-xs font-mono text-textMuted select-none">停止中</span>
+        <span id="whisperBadge" class="hidden text-[10px] font-mono text-textSubtle select-none"></span>
       </div>
 
       <!-- Action controls (Clean, monochrome text buttons) -->
@@ -234,13 +235,37 @@
               </select>
             </div>
             <div>
-              <label class="block text-textMuted mb-1">無音判定しきい値 (RMS)</label>
+              <label class="block text-textMuted mb-1">無音判定しきい値 (増幅前のRMS)</label>
               <select id="settingSilenceThreshold" class="w-full bg-black border border-border px-3 py-2 rounded text-textMain focus:outline-none focus:border-textMuted font-mono">
-                <option value="0.005">高感度 (0.005)</option>
-                <option value="0.01" selected>標準 (0.010)</option>
-                <option value="0.02">低感度 (0.020)</option>
+                <option value="0">無効 (常に文字起こし)</option>
+                <option value="0.001">高感度 (0.001)</option>
+                <option value="0.002" selected>標準 (0.002)</option>
+                <option value="0.005">低感度 (0.005)</option>
               </select>
             </div>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label class="block text-textMuted mb-1">マイク入力の増幅</label>
+              <select id="settingInputGain" class="w-full bg-black border border-border px-3 py-2 rounded text-textMain focus:outline-none focus:border-textMuted font-mono">
+                <option value="auto" selected>自動 (小さい声を自動で持ち上げる)</option>
+                <option value="1">x1 (増幅なし)</option>
+                <option value="2">x2</option>
+                <option value="4">x4</option>
+                <option value="8">x8</option>
+                <option value="16">x16</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-textMuted mb-1">ブラウザのノイズ除去</label>
+              <select id="settingNoiseSuppression" class="w-full bg-black border border-border px-3 py-2 rounded text-textMain focus:outline-none focus:border-textMuted font-mono">
+                <option value="off" selected>オフ (遠くの声を拾いやすい・推奨)</option>
+                <option value="on">オン (近くの声のみ・雑音を削る)</option>
+              </select>
+            </div>
+          </div>
+          <div class="font-mono text-[11px] text-textSubtle">
+            ※ 増幅はWhisperと.wav保存に適用されます。ブラウザ標準 (Web Speech API) はブラウザが直接マイクを使うため増幅できません。音が小さい環境では「ハイブリッド」または「ローカルWhisper単体」をお使いください。
           </div>
           <div id="whisperStatus" class="font-mono text-[11px] text-textSubtle pt-1">
             ローカルモデルステータス: 未初期化 (ハイブリッド / Whisper単体選択時にロードされます)
@@ -310,12 +335,19 @@
       ringBufferFilled: false,
       sampleRate: 16000,
       ringBufferSec: 90,
-      whisperPipeline: null,
+      whisperWorker: null,
+      whisperReady: false,
       isWhisperLoading: false,
       isWhisperProcessing: false,
       pcmAccumulator: [],
+      rawSumSquares: 0, // pre-gain energy of the current Whisper chunk (for silence detection)
+      rawSampleCount: 0,
+      whisperQueue: [],
+      agcGain: 1,
+      speechFatalError: false,
       lastChunkTime: 0,
       settings: {
+        settingsVersion: 2,
         subject: '',
         keywords: '',
         overview: '',
@@ -325,7 +357,9 @@
         engine: 'speech-only', // 'speech-only', 'hybrid', or 'whisper-only'
         whisperModel: 'onnx-community/whisper-tiny',
         chunkSec: 10,
-        silenceThreshold: 0.01,
+        silenceThreshold: 0.002,
+        inputGain: 'auto',
+        noiseSuppression: 'off',
       }
     };
 
@@ -337,6 +371,7 @@
       closeErrorBtn: document.getElementById('closeErrorBtn'),
       statusDot: document.getElementById('statusDot'),
       statusText: document.getElementById('statusText'),
+      whisperBadge: document.getElementById('whisperBadge'),
       audioLevelMeter: document.getElementById('audioLevelMeter'),
       audioLevelBar: document.getElementById('audioLevelBar'),
       toggleRecordBtn: document.getElementById('toggleRecordBtn'),
@@ -369,6 +404,8 @@
       settingWhisperModel: document.getElementById('settingWhisperModel'),
       settingChunkSec: document.getElementById('settingChunkSec'),
       settingSilenceThreshold: document.getElementById('settingSilenceThreshold'),
+      settingInputGain: document.getElementById('settingInputGain'),
+      settingNoiseSuppression: document.getElementById('settingNoiseSuppression'),
       // Export buttons
       downloadTxtBtn: document.getElementById('downloadTxtBtn'),
       downloadMdBtn: document.getElementById('downloadMdBtn'),
@@ -400,6 +437,11 @@
         const saved = localStorage.getItem('notes_lecture_settings');
         if (saved) {
           const parsed = JSON.parse(saved);
+          // v1 thresholds (0.005-0.02) were measured too strictly and discarded quiet speech
+          if (!parsed.settingsVersion || parsed.settingsVersion < 2) {
+            delete parsed.silenceThreshold;
+            parsed.settingsVersion = 2;
+          }
           Object.assign(state.settings, parsed);
         }
       } catch (e) {
@@ -415,7 +457,10 @@
       dom.settingEngine.value = state.settings.engine || 'speech-only';
       dom.settingWhisperModel.value = state.settings.whisperModel || 'onnx-community/whisper-tiny';
       dom.settingChunkSec.value = state.settings.chunkSec || 10;
-      dom.settingSilenceThreshold.value = state.settings.silenceThreshold || 0.01;
+      dom.settingSilenceThreshold.value = String(state.settings.silenceThreshold ?? 0.002);
+      if (!dom.settingSilenceThreshold.value) dom.settingSilenceThreshold.value = '0.002';
+      dom.settingInputGain.value = state.settings.inputGain || 'auto';
+      dom.settingNoiseSuppression.value = state.settings.noiseSuppression || 'off';
     }
 
     function saveSettings() {
@@ -429,6 +474,8 @@
       state.settings.whisperModel = dom.settingWhisperModel.value;
       state.settings.chunkSec = parseInt(dom.settingChunkSec.value, 10);
       state.settings.silenceThreshold = parseFloat(dom.settingSilenceThreshold.value);
+      state.settings.inputGain = dom.settingInputGain.value;
+      state.settings.noiseSuppression = dom.settingNoiseSuppression.value;
 
       localStorage.setItem('notes_lecture_settings', JSON.stringify(state.settings));
       showToast('設定を保存しました');
@@ -653,7 +700,8 @@
           } else {
             showError('音声認識サービスへの通信に失敗しました (network error)。');
           }
-        } else if (event.error === 'not-allowed') {
+        } else if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+          state.speechFatalError = true; // Retrying would just loop on the same error
           showError('マイクのアクセスがブロックされています。ブラウザのアドレスバーの鍵アイコンからマイクを許可してください。');
         } else if (event.error === 'audio-capture') {
           showError('マイク入力の取得に失敗しました。他のアプリでマイクが占有されていないかご確認ください。');
@@ -664,7 +712,7 @@
 
       recognition.onend = () => {
         flushCurrentInterim();
-        if (state.isRecording && state.settings.engine !== 'whisper-only') {
+        if (state.isRecording && state.settings.engine !== 'whisper-only' && !state.speechFatalError) {
           try {
             recognition.start();
           } catch (e) {
@@ -685,20 +733,31 @@
     // --- AudioContext & Audio Stream (for Volume Meter + RingBuffer + Whisper) ---
     async function initAudioStream() {
       try {
+        // Echo cancellation / noise suppression treat a distant lecturer's voice as noise
+        // and attenuate it heavily, so they are off by default.
+        const suppress = state.settings.noiseSuppression === 'on';
         state.mediaStream = await navigator.mediaDevices.getUserMedia({
           audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
+            channelCount: 1,
+            echoCancellation: suppress,
+            noiseSuppression: suppress,
+            autoGainControl: true,
           }
         });
 
         state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        if (state.audioContext.state === 'suspended') {
+          await state.audioContext.resume().catch(() => {});
+        }
         const inputSampleRate = state.audioContext.sampleRate;
 
         const source = state.audioContext.createMediaStreamSource(state.mediaStream);
         state.scriptProcessor = state.audioContext.createScriptProcessor(4096, 1, 1);
 
         state.pcmAccumulator = [];
+        state.rawSumSquares = 0;
+        state.rawSampleCount = 0;
+        state.agcGain = 1;
         state.lastChunkTime = performance.now();
         dom.audioLevelMeter.classList.remove('hidden');
 
@@ -706,24 +765,32 @@
           if (!state.isRecording) return;
           const inputData = e.inputBuffer.getChannelData(0);
 
-          // 1. Calculate Volume Level for Visual Meter
+          // 1. Raw (pre-gain) energy, used for silence detection
           let sumSquares = 0;
           for (let i = 0; i < inputData.length; i++) {
             sumSquares += inputData[i] * inputData[i];
           }
-          const rms = Math.sqrt(sumSquares / inputData.length);
-          const levelPercent = Math.min(100, Math.round(rms * 400));
+          const rawRms = Math.sqrt(sumSquares / inputData.length);
+
+          // 2. Amplify quiet input (fixed gain or automatic gain control)
+          const gain = computeGain(rawRms);
+          const amplified = applyGain(inputData, gain);
+
+          // Visual meter shows the amplified level
+          const levelPercent = Math.min(100, Math.round(rawRms * gain * 400));
           dom.audioLevelBar.style.width = `${levelPercent}%`;
 
           // Downsample to 16kHz for ringBuffer & Whisper
-          const downsampled = downsampleTo16k(inputData, inputSampleRate);
+          const downsampled = downsampleTo16k(amplified, inputSampleRate);
 
-          // 2. Ring buffer for 90s .wav export
+          // 3. Ring buffer for 90s .wav export
           pushToRingBuffer(downsampled);
 
-          // 3. Accumulate PCM for Whisper
+          // 4. Accumulate PCM for Whisper
           if (state.settings.engine === 'hybrid' || state.settings.engine === 'whisper-only') {
             state.pcmAccumulator.push(downsampled);
+            state.rawSumSquares += sumSquares;
+            state.rawSampleCount += inputData.length;
             const now = performance.now();
             const elapsedSec = (now - state.lastChunkTime) / 1000;
 
@@ -735,10 +802,13 @@
                 combinedPcm.set(c, offset);
                 offset += c.length;
               }
+              const chunkRawRms = Math.sqrt(state.rawSumSquares / Math.max(1, state.rawSampleCount));
               state.pcmAccumulator = [];
+              state.rawSumSquares = 0;
+              state.rawSampleCount = 0;
               state.lastChunkTime = now;
 
-              processWhisperChunk(combinedPcm);
+              enqueueWhisperChunk(combinedPcm, chunkRawRms);
             }
           }
         };
@@ -752,6 +822,34 @@
           showError('マイクの使用許可が必要です。ブラウザの設定でマイクを許可してください。');
         }
       }
+    }
+
+    // --- Input Gain ---
+    const AGC_TARGET_RMS = 0.08;
+    const AGC_MAX_GAIN = 30;
+    const AGC_NOISE_FLOOR = 0.0005; // Don't chase gain upward on near-digital-silence
+
+    function computeGain(rawRms) {
+      const setting = state.settings.inputGain;
+      if (setting && setting !== 'auto') {
+        return parseFloat(setting) || 1;
+      }
+      if (rawRms > AGC_NOISE_FLOOR) {
+        const desired = Math.min(AGC_MAX_GAIN, Math.max(1, AGC_TARGET_RMS / rawRms));
+        // Fast attack (loud sounds drop gain quickly), slow release (gain rises gradually)
+        const rate = desired < state.agcGain ? 0.5 : 0.05;
+        state.agcGain += (desired - state.agcGain) * rate;
+      }
+      return state.agcGain;
+    }
+
+    function applyGain(buffer, gain) {
+      const out = new Float32Array(buffer.length);
+      for (let i = 0; i < buffer.length; i++) {
+        // Soft clip to avoid harsh distortion when amplified peaks exceed full scale
+        out[i] = Math.tanh(buffer[i] * gain);
+      }
+      return out;
     }
 
     // Linear downsampling helper
@@ -792,64 +890,207 @@
       dom.audioLevelMeter.classList.add('hidden');
       dom.audioLevelBar.style.width = '0%';
       state.pcmAccumulator = [];
+      state.rawSumSquares = 0;
+      state.rawSampleCount = 0;
     }
 
     // --- Transformers.js Local Whisper Pipeline ---
-    async function loadWhisperModel() {
-      if (state.whisperPipeline || state.isWhisperLoading) return;
-      state.isWhisperLoading = true;
-      dom.whisperStatus.textContent = 'ローカルWhisper準備中: ライブラリを初期化中...';
+    const WHISPER_QUEUE_MAX = 6; // Oldest chunks are dropped beyond this to avoid unbounded lag
 
-      try {
-        const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0');
-        env.allowLocalModels = false;
+    // Phrases Whisper tends to hallucinate on silence/noise (learned from video subtitles)
+    const WHISPER_HALLUCINATIONS = [
+      'ご視聴ありがとうございました',
+      'ご清聴ありがとうございました',
+      'チャンネル登録',
+      '字幕作成',
+      '字幕制作',
+      '最後までご視聴',
+    ];
 
-        const hasWebGPU = !!navigator.gpu;
-        const device = hasWebGPU ? 'webgpu' : 'wasm';
-        const modelId = state.settings.whisperModel;
-
-        dom.whisperStatus.textContent = `モデル (${modelId}) をロード中 [${device.toUpperCase()}]... 初回はダウンロードに数分かかります`;
-
-        state.whisperPipeline = await pipeline('automatic-speech-recognition', modelId, {
-          device: device,
-          dtype: hasWebGPU ? 'fp32' : 'q8',
-        });
-
-        dom.whisperStatus.textContent = `ローカルWhisper準備完了 (${modelId} / ${device.toUpperCase()})`;
-      } catch (err) {
-        console.error('Whisper load error:', err);
-        dom.whisperStatus.textContent = `Whisperの読み込みに失敗しました (${err.message || 'Error'})。`;
-      } finally {
-        state.isWhisperLoading = false;
+    function setWhisperStatus(detail, badge) {
+      dom.whisperStatus.textContent = detail;
+      if (badge) {
+        dom.whisperBadge.textContent = badge;
+        dom.whisperBadge.classList.remove('hidden');
+      } else {
+        dom.whisperBadge.classList.add('hidden');
       }
     }
 
-    async function processWhisperChunk(pcmData) {
-      if (!state.whisperPipeline || state.isWhisperProcessing) return;
+    // Whisper runs in a Web Worker: inference on the main thread freezes the page and
+    // stalls the microphone callback, silently dropping audio captured meanwhile.
+    const WHISPER_WORKER_SRC = `
+      let transcriber = null;
+      self.onmessage = async (e) => {
+        const msg = e.data;
+        if (msg.type === 'load') {
+          try {
+            const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1');
+            env.allowLocalModels = false;
+            const hasWebGPU = !!self.navigator.gpu && !!(await self.navigator.gpu.requestAdapter().catch(() => null));
+            const device = hasWebGPU ? 'webgpu' : 'wasm';
+            self.postMessage({ type: 'loading', device });
+            transcriber = await pipeline('automatic-speech-recognition', msg.modelId, {
+              device,
+              // Recommended Whisper config for WebGPU; fp16 can produce empty output
+              dtype: hasWebGPU ? { encoder_model: 'fp32', decoder_model_merged: 'q4' } : 'q8',
+            });
+            self.postMessage({ type: 'ready', device });
+          } catch (err) {
+            self.postMessage({ type: 'error', message: String(err && err.message || err) });
+          }
+        } else if (msg.type === 'transcribe') {
+          try {
+            const result = await transcriber(msg.pcm, { language: 'japanese', task: 'transcribe' });
+            self.postMessage({ type: 'result', id: msg.id, text: (result && result.text) || '' });
+          } catch (err) {
+            self.postMessage({ type: 'result', id: msg.id, error: String(err && err.message || err) });
+          }
+        }
+      };
+    `;
 
-      let sumSquares = 0;
-      for (let i = 0; i < pcmData.length; i++) {
-        sumSquares += pcmData[i] * pcmData[i];
+    const whisperRequests = new Map(); // id -> { resolve, reject }
+    let whisperRequestSeq = 0;
+
+    function resetWhisperWorker() {
+      if (state.whisperWorker) state.whisperWorker.terminate();
+      state.whisperWorker = null;
+      state.whisperReady = false;
+      state.isWhisperLoading = false;
+      for (const { reject } of whisperRequests.values()) reject(new Error('worker reset'));
+      whisperRequests.clear();
+    }
+
+    function loadWhisperModel() {
+      if (state.whisperReady || state.isWhisperLoading) return;
+      state.isWhisperLoading = true;
+      setWhisperStatus('ローカルWhisper準備中: ライブラリを初期化中...', 'Whisper 読込中…');
+
+      const modelId = state.settings.whisperModel;
+      const workerUrl = URL.createObjectURL(new Blob([WHISPER_WORKER_SRC], { type: 'text/javascript' }));
+      const worker = new Worker(workerUrl, { type: 'module' });
+      URL.revokeObjectURL(workerUrl);
+      state.whisperWorker = worker;
+
+      worker.onmessage = (e) => {
+        const msg = e.data;
+        if (msg.type === 'loading') {
+          setWhisperStatus(`モデル (${modelId}) をロード中 [${msg.device.toUpperCase()}]... 初回はダウンロードに数分かかります`, 'Whisper ダウンロード中…');
+        } else if (msg.type === 'ready') {
+          state.isWhisperLoading = false;
+          state.whisperReady = true;
+          setWhisperStatus(`ローカルWhisper準備完了 (${modelId} / ${msg.device.toUpperCase()})`, null);
+          drainWhisperQueue();
+        } else if (msg.type === 'error') {
+          console.error('Whisper load error:', msg.message);
+          resetWhisperWorker();
+          setWhisperStatus(`Whisperの読み込みに失敗しました (${msg.message})。`, 'Whisper 読込失敗');
+          showError(`ローカルWhisperの読み込みに失敗しました: ${msg.message}。ネット接続を確認するか、モデルを whisper-tiny に変更してください。`);
+        } else if (msg.type === 'result') {
+          const req = whisperRequests.get(msg.id);
+          if (!req) return;
+          whisperRequests.delete(msg.id);
+          if (msg.error) req.reject(new Error(msg.error));
+          else req.resolve(msg.text);
+        }
+      };
+      worker.onerror = (e) => {
+        console.error('Whisper worker error:', e);
+        const message = e.message || 'Worker error';
+        resetWhisperWorker();
+        setWhisperStatus(`Whisperの読み込みに失敗しました (${message})。`, 'Whisper 読込失敗');
+      };
+
+      worker.postMessage({ type: 'load', modelId });
+    }
+
+    function runWhisper(pcm) {
+      return new Promise((resolve, reject) => {
+        const id = ++whisperRequestSeq;
+        whisperRequests.set(id, { resolve, reject });
+        state.whisperWorker.postMessage({ type: 'transcribe', id, pcm }, [pcm.buffer]);
+      });
+    }
+
+    // Collect whatever audio is left when recording stops so the last words aren't lost
+    function flushWhisperAccumulator() {
+      const totalLen = state.pcmAccumulator.reduce((sum, c) => sum + c.length, 0);
+      if (totalLen < state.sampleRate) return; // Under 1s: not worth transcribing
+      const combinedPcm = new Float32Array(totalLen);
+      let offset = 0;
+      for (const c of state.pcmAccumulator) {
+        combinedPcm.set(c, offset);
+        offset += c.length;
       }
-      const rms = Math.sqrt(sumSquares / pcmData.length);
-      if (rms < state.settings.silenceThreshold) return;
+      const rawRms = Math.sqrt(state.rawSumSquares / Math.max(1, state.rawSampleCount));
+      state.pcmAccumulator = [];
+      enqueueWhisperChunk(combinedPcm, rawRms);
+    }
 
+    function enqueueWhisperChunk(pcmData, rawRms) {
+      if (rawRms < state.settings.silenceThreshold) {
+        console.debug(`Whisper: skipped silent chunk (raw RMS ${rawRms.toFixed(4)})`);
+        return;
+      }
+      state.whisperQueue.push({ pcm: pcmData, time: new Date() });
+      if (state.whisperQueue.length > WHISPER_QUEUE_MAX) {
+        state.whisperQueue.shift();
+        console.warn('Whisper: queue overflow, dropped oldest chunk (try a smaller model)');
+      }
+      drainWhisperQueue();
+    }
+
+    async function drainWhisperQueue() {
+      if (!state.whisperReady || state.isWhisperProcessing) return;
       state.isWhisperProcessing = true;
       try {
-        const result = await state.whisperPipeline(pcmData, {
-          language: 'japanese',
-          task: 'transcribe',
-        });
+        while (state.whisperQueue.length > 0 && state.whisperReady) {
+          const { pcm, time } = state.whisperQueue.shift();
+          if (state.whisperQueue.length > 0) {
+            dom.whisperBadge.textContent = `Whisper 処理待ち ${state.whisperQueue.length}`;
+            dom.whisperBadge.classList.remove('hidden');
+          }
+          await transcribeChunk(pcm, time);
+        }
+      } finally {
+        state.isWhisperProcessing = false;
+        dom.whisperBadge.classList.add('hidden');
+      }
+    }
 
-        const transcribed = result?.text?.trim();
-        if (transcribed && transcribed.length > 1) {
+    function normalizePeak(pcmData, targetPeak = 0.9) {
+      let peak = 0;
+      for (let i = 0; i < pcmData.length; i++) {
+        const a = Math.abs(pcmData[i]);
+        if (a > peak) peak = a;
+      }
+      if (peak < 1e-4) return pcmData;
+      const scale = Math.min(targetPeak / peak, AGC_MAX_GAIN);
+      const out = new Float32Array(pcmData.length);
+      for (let i = 0; i < pcmData.length; i++) out[i] = pcmData[i] * scale;
+      return out;
+    }
+
+    function isLikelyHallucination(text) {
+      if (WHISPER_HALLUCINATIONS.some(p => text.includes(p))) return true;
+      // Degenerate repetition such as "あああああ..." or the same phrase looping
+      if (/(.{1,8})\1{5,}/.test(text)) return true;
+      return false;
+    }
+
+    async function transcribeChunk(pcmData, time) {
+      try {
+        // Copy so that transferring the buffer to the worker never detaches shared data
+        const text = await runWhisper(normalizePeak(pcmData).slice());
+        const transcribed = text.trim();
+        if (transcribed && transcribed.length > 1 && !isLikelyHallucination(transcribed)) {
           const prefix = state.settings.engine === 'hybrid' ? '[W] ' : '';
-          addTranscriptLine(`${prefix}${transcribed}`, new Date(), 'whisper');
+          addTranscriptLine(`${prefix}${transcribed}`, time, 'whisper');
         }
       } catch (err) {
         console.warn('Whisper inference error:', err);
-      } finally {
-        state.isWhisperProcessing = false;
+        setWhisperStatus(`Whisper推論エラー: ${err.message || err}`, 'Whisper エラー');
       }
     }
 
@@ -857,6 +1098,7 @@
     async function startRecording() {
       if (state.isRecording) return;
       state.isRecording = true;
+      state.speechFatalError = false;
       hideError();
 
       // 1. Web Speech API (if not whisper-only)
@@ -893,6 +1135,7 @@
           state.speechRecognition.stop();
         } catch (e) {}
       }
+      flushWhisperAccumulator();
       stopAudioStream();
       updateRecordingStatus(false);
     }
@@ -1203,7 +1446,11 @@
     dom.settingsBtn.addEventListener('click', openSettings);
     dom.closeSettingsBtn.addEventListener('click', closeSettings);
     dom.saveSettingsBtn.addEventListener('click', () => {
+      const prevModel = state.settings.whisperModel;
       saveSettings();
+      if (state.settings.whisperModel !== prevModel) {
+        resetWhisperWorker(); // Reload with the newly selected model
+      }
       closeSettings();
       if ((state.settings.engine === 'hybrid' || state.settings.engine === 'whisper-only') && state.isRecording) {
         loadWhisperModel();
