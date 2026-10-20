@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+*.sqlite3
+.DS_Store
+.agent_runs/
+.development/
